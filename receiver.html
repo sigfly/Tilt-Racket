@@ -1,24 +1,27 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tilt Racket TV</title>
 <style>html,body{margin:0;width:100%;height:100%;background:#080f1c;color:white;font-family:system-ui;overflow:hidden}canvas{display:block;width:100vw;height:100vh}</style></head>
-<body><div style="position:fixed;top:8px;right:12px;z-index:10;color:#a8bdd3;background:#080f1c99;padding:3px 7px;border-radius:5px;font:12px system-ui;pointer-events:none">v3.2</div><canvas id="screen"></canvas><script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script><script>
+<body><div style="position:fixed;top:8px;right:12px;z-index:10;color:#a8bdd3;background:#080f1c99;padding:3px 7px;border-radius:5px;font:12px system-ui;pointer-events:none">v3.3</div><canvas id="screen"></canvas><script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script><script>
 (()=>{'use strict';
 const c=document.getElementById('screen'),ctx=c.getContext('2d');
 const W=400,H=500,NS='urn:x-cast:com.tiltracket.game';
 const p={x:200,y:451,w:96,h:13},b={x:200,y:90,vx:65,vy:20,r:9};
-let target=200,velocity=0,packetAt=0,lastSeq=-1,packetCount=0,maxGap=0,avgGap=0,hits=0,over=false,last=0,lastControl=0,receiverStatus='Starting receiver…',senderId=null,receiver=null,lastState=0;function sendState(){if(receiver&&senderId){try{receiver.sendCustomMessage(NS,senderId,{type:'state',hits,over})}catch(e){receiverStatus='State send error: '+e.message}}}
+let target=200,velocity=0,packetAt=0,lastSeq=-1,packetCount=0,maxGap=0,avgGap=0,gapSamples=[],targetVelocity=0,hits=0,over=false,last=0,lastControl=0,receiverStatus='Starting receiver…',senderId=null,receiver=null,lastState=0;function sendState(){if(receiver&&senderId){try{receiver.sendCustomMessage(NS,senderId,{type:'state',hits,over})}catch(e){receiverStatus='State send error: '+e.message}}}
 function reset(){hits=0;over=false;b.x=200;b.y=90;b.vx=65;b.vy=20;sendState();}
 function resize(){const d=Math.min(devicePixelRatio||1,2);c.width=Math.round(innerWidth*d);c.height=Math.round(innerHeight*d)}
 addEventListener('resize',resize);resize();
 function update(dt){
 // Critically damped motion: continuously animated, bounded speed, no network-arrival extrapolation.
-const omega=23;
-const error=target-p.x;
+const age=packetAt?performance.now()-packetAt:Infinity;
+// Predict for at most 65ms, then hold the last target to avoid runaway movement.
+const predicted=Math.max(p.w/2,Math.min(W-p.w/2,target+targetVelocity*Math.min(age,65)/1000));
+const omega=28;
+const error=predicted-p.x;
 const acceleration=omega*omega*error-2*omega*velocity;
 velocity=Math.max(-1300,Math.min(1300,velocity+acceleration*dt));
 const step=velocity*dt;
-if(Math.abs(error)<0.15&&Math.abs(velocity)<2){p.x=target;velocity=0}
-else if(Math.sign(error)!==Math.sign(target-(p.x+step))&&Math.abs(error)<4){p.x=target;velocity=0}
+if(Math.abs(error)<0.15&&Math.abs(velocity)<2){p.x=predicted;velocity=0}
+else if(Math.sign(error)!==Math.sign(predicted-(p.x+step))&&Math.abs(error)<4){p.x=predicted;velocity=0}
 else p.x=Math.max(p.w/2,Math.min(W-p.w/2,p.x+step));
 if(over || !lastControl || Date.now()-lastControl>2500)return;
 const old=b.y;b.vy+=420*dt;b.x+=b.vx*dt;b.y+=b.vy*dt;
@@ -39,7 +42,7 @@ ctx.fillStyle='#51d7ae';ctx.fillRect(p.x-p.w/2,p.y,p.w,p.h);
 ctx.fillStyle='#ffd16b';ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,Math.PI*2);ctx.fill();
 if(over){ctx.fillStyle='rgba(4,10,20,.74)';ctx.fillRect(0,0,W,H);ctx.fillStyle='white';ctx.font='bold 30px system-ui';ctx.fillText('Game over',W/2,240);ctx.font='16px system-ui';ctx.fillText('Restart on phone',W/2,275)}
 ctx.fillStyle='#a8bdd3';ctx.font='12px system-ui';ctx.fillText(!lastControl?'Waiting for phone controller…':(Date.now()-lastControl<2500?'Phone controls received':'Phone disconnected / updates paused'),W/2,65);
-ctx.font='11px system-ui';ctx.fillStyle='#8da5ba';ctx.fillText('Input gap avg '+Math.round(avgGap)+'ms · max '+Math.round(maxGap)+'ms · packets '+packetCount,W/2,475);if(receiverStatus!=='Cast receiver running')ctx.fillText(receiverStatus,W/2,490);
+ctx.font='11px system-ui';ctx.fillStyle='#8da5ba';ctx.fillText('Last 5s gap avg '+Math.round(avgGap)+'ms · max '+Math.round(maxGap)+'ms · packets '+packetCount,W/2,475);if(receiverStatus!=='Cast receiver running')ctx.fillText(receiverStatus,W/2,490);
 }
 function frame(t){const dt=last?Math.min(.032,(t-last)/1000):0;last=t;update(dt);if(t-lastState>1000){lastState=t;sendState()}draw();requestAnimationFrame(frame)}requestAnimationFrame(frame);
 try{if(window.cast&&cast.framework){receiver=cast.framework.CastReceiverContext.getInstance();receiver.addCustomMessageListener(NS,event=>{let m=event.data;if(typeof m==='string'){try{m=JSON.parse(m)}catch(e){return}}if(!m||typeof m!=='object')return;senderId=event.senderId||senderId;if(m.type==='hello'){lastControl=Date.now();sendState()}
@@ -47,9 +50,13 @@ if(m.type==='paddle'&&Number.isFinite(m.x)){
 if(Number.isFinite(m.seq)&&m.seq<=lastSeq)return;
 if(Number.isFinite(m.seq))lastSeq=m.seq;
 const now=performance.now();
-if(packetAt){const gap=now-packetAt;maxGap=Math.max(maxGap,gap);avgGap=avgGap?avgGap*.9+gap*.1:gap;}
+if(packetAt){const gap=now-packetAt;gapSamples.push({t:now,gap});}
+while(gapSamples.length&&now-gapSamples[0].t>5000)gapSamples.shift();
+maxGap=gapSamples.length?Math.max(...gapSamples.map(v=>v.gap)):0;
+avgGap=gapSamples.length?gapSamples.reduce((a,v)=>a+v.gap,0)/gapSamples.length:0;
 packetAt=now;packetCount++;
 target=Math.max(p.w/2,Math.min(W-p.w/2,m.x*W));
+targetVelocity=Number.isFinite(m.vx)?Math.max(-1000,Math.min(1000,m.vx*W)):0;
 lastControl=Date.now()}
 if(m.type==='restart'){reset();lastControl=Date.now()}});
 receiver.start({disableIdleTimeout:true});receiverStatus='Cast receiver running';
