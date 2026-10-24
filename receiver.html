@@ -1,24 +1,28 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tilt Racket TV</title>
 <style>html,body{margin:0;width:100%;height:100%;background:#080f1c;color:white;font-family:system-ui;overflow:hidden}canvas{display:block;width:100vw;height:100vh}</style></head>
-<body><div style="position:fixed;top:8px;right:12px;z-index:10;color:#a8bdd3;background:#080f1c99;padding:3px 7px;border-radius:5px;font:12px system-ui;pointer-events:none">v4.1</div><canvas id="screen"></canvas><script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script><script>
+<body><div style="position:fixed;top:8px;right:12px;z-index:10;color:#a8bdd3;background:#080f1c99;padding:3px 7px;border-radius:5px;font:12px system-ui;pointer-events:none">v4.2</div><canvas id="screen"></canvas><script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script><script>
 (()=>{'use strict';
 const c=document.getElementById('screen'),ctx=c.getContext('2d');
 const W=400,H=500,NS='urn:x-cast:com.tiltracket.game';
 const p={x:200,y:451,w:96,h:13},b={x:200,y:90,vx:65,vy:20,r:9};
 let rtcPeer=null,rtcChannel=null,rtcEpoch=0,rtcState='Cast fallback',rtcIceQueue=[];
+const RTC_CONFIG={iceServers:[{urls:["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]}]};
+let rtcLocalTypes="none",rtcRemoteTypes="none",rtcPair="none",rtcGather="new",rtcStatsAt=0;
 let rtcDiag='API '+(typeof RTCPeerConnection==='function'?'available':'unavailable'),rtcIce='new',rtcConn='new',rtcData='closed',rtcCandidates=0,rtcRemoteCandidates=0;
 let target=200,velocity=0,packetAt=0,lastSeq=-1,packetCount=0,maxGap=0,avgGap=0,gapSamples=[],targetVelocity=0,hits=0,over=false,last=0,lastControl=0,receiverStatus='Starting receiver…',senderId=null,receiver=null,lastState=0;function sendState(){if(receiver&&senderId){try{receiver.sendCustomMessage(NS,senderId,{type:'state',hits,over})}catch(e){receiverStatus='State send error: '+e.message}}}
 
+function candidateTypes(sdp){const counts={};for(const line of (sdp||'').split(/\r?\n/)){if(!line.startsWith('a=candidate:'))continue;const m=/\btyp\s+(host|srflx|prflx|relay)\b/.exec(line);if(m)counts[m[1]]=(counts[m[1]]||0)+1}return Object.keys(counts).length?Object.keys(counts).map(k=>k+':'+counts[k]).join(' '):'none'}
+async function rtcCheckPair(){const pc=rtcPeer;if(!pc||pc.connectionState==='closed')return;try{const stats=await pc.getStats();let selected=null,local=null,remote=null;stats.forEach(r=>{if(r.type==='transport'&&r.selectedCandidatePairId)selected=stats.get(r.selectedCandidatePairId)});if(!selected)stats.forEach(r=>{if(r.type==='candidate-pair'&&(r.selected||r.nominated)&&r.state==='succeeded')selected=r});if(selected){local=stats.get(selected.localCandidateId);remote=stats.get(selected.remoteCandidateId);rtcPair=(local?.candidateType||'?')+' → '+(remote?.candidateType||'?')+(Number.isFinite(selected.currentRoundTripTime)?' RTT '+Math.round(selected.currentRoundTripTime*1000)+'ms':'')}else rtcPair='no selected pair';}catch(e){rtcPair='stats unavailable: '+rtcError(e).slice(0,30)}}
 function rtcError(e){return (e&&e.name?e.name+': ':'')+(e&&e.message?e.message:String(e))}
 function iceWait(pc,limit=6500){return new Promise(resolve=>{if(pc.iceGatheringState==='complete')return resolve('complete');let done=false;const finish=s=>{if(done)return;done=true;clearTimeout(timer);pc.removeEventListener('icegatheringstatechange',check);resolve(s)};const check=()=>{if(pc.iceGatheringState==='complete')finish('complete')};const timer=setTimeout(()=>finish('timeout'),limit);pc.addEventListener('icegatheringstatechange',check)})}
 function rtcOpen(){return rtcChannel&&rtcChannel.readyState==='open'}
-function rtcCleanup(){rtcEpoch++;if(rtcChannel)try{rtcChannel.close()}catch(e){};if(rtcPeer)try{rtcPeer.close()}catch(e){};rtcChannel=null;rtcPeer=null;rtcIceQueue=[];rtcState='Cast fallback';rtcIce='new';rtcConn='new';rtcData='closed';rtcCandidates=0;rtcRemoteCandidates=0}
+function rtcCleanup(){rtcEpoch++;if(rtcChannel)try{rtcChannel.close()}catch(e){};if(rtcPeer)try{rtcPeer.close()}catch(e){};rtcChannel=null;rtcPeer=null;rtcIceQueue=[];rtcState='Cast fallback';rtcIce='new';rtcConn='new';rtcData='closed';rtcCandidates=0;rtcRemoteCandidates=0;rtcLocalTypes='none';rtcRemoteTypes='none';rtcPair='none';rtcGather='new'}
 function sendSignal(m){if(receiver&&senderId)try{receiver.sendCustomMessage(NS,senderId,m)}catch(e){rtcDiag='Signaling send: '+rtcError(e)}}
 async function startRtc(){
  if(!window.RTCPeerConnection||!senderId){rtcState='WebRTC unsupported';rtcDiag='No RTCPeerConnection or sender ID';return}
  rtcCleanup();const epoch=rtcEpoch;
- try{const pc=new RTCPeerConnection({iceServers:[]});rtcPeer=pc;rtcState='WebRTC negotiating';rtcDiag='Creating offer';
+ try{const pc=new RTCPeerConnection(RTC_CONFIG);rtcPeer=pc;rtcState='WebRTC negotiating';rtcDiag='Creating offer';
  const ch=pc.createDataChannel('racket',{ordered:false,maxRetransmits:0});rtcChannel=ch;
  ch.onopen=()=>{if(epoch!==rtcEpoch)return;rtcState='WebRTC direct';rtcData='open'};
  ch.onclose=()=>{if(epoch!==rtcEpoch)return;rtcData='closed';rtcState='Cast fallback'};
@@ -28,12 +32,12 @@ async function startRtc(){
  pc.oniceconnectionstatechange=()=>{if(epoch===rtcEpoch)rtcIce=pc.iceConnectionState};
  pc.onconnectionstatechange=()=>{if(epoch!==rtcEpoch)return;rtcConn=pc.connectionState;if(['failed','closed','disconnected'].includes(pc.connectionState))rtcState='Cast fallback'};
  const offer=await pc.createOffer();await pc.setLocalDescription(offer);rtcDiag='Gathering TV ICE candidates';
- const result=await iceWait(pc);if(epoch!==rtcEpoch)return;
+ const result=await iceWait(pc,10000);if(epoch!==rtcEpoch)return;rtcGather=result;rtcLocalTypes=candidateTypes(pc.localDescription?.sdp);
  rtcDiag='Offer sent ('+result+', '+rtcCandidates+' local candidates)';
  sendSignal({type:'rtc-offer',sdp:pc.localDescription.sdp});
  }catch(e){rtcState='WebRTC failed — Cast fallback';rtcDiag=rtcError(e)}
 }
-async function handleSignal(m){if(m.type==='rtc-answer'&&rtcPeer){try{rtcDiag='Answer received';rtcRemoteCandidates=(m.sdp.match(/a=candidate:/g)||[]).length;await rtcPeer.setRemoteDescription({type:'answer',sdp:m.sdp});rtcDiag='Remote answer applied ('+rtcRemoteCandidates+' candidates)'}catch(e){rtcState='WebRTC negotiation failed';rtcDiag=rtcError(e)}}else if(m.type==='rtc-ice'&&rtcPeer){try{await rtcPeer.addIceCandidate(m.candidate)}catch(e){rtcDiag='ICE candidate: '+rtcError(e)}}}
+async function handleSignal(m){if(m.type==='rtc-answer'&&rtcPeer){try{rtcDiag='Answer received';rtcRemoteCandidates=(m.sdp.match(/a=candidate:/g)||[]).length;rtcRemoteTypes=candidateTypes(m.sdp);await rtcPeer.setRemoteDescription({type:'answer',sdp:m.sdp});rtcDiag='Remote answer applied ('+rtcRemoteCandidates+' candidates)'}catch(e){rtcState='WebRTC negotiation failed';rtcDiag=rtcError(e)}}else if(m.type==='rtc-ice'&&rtcPeer){try{await rtcPeer.addIceCandidate(m.candidate)}catch(e){rtcDiag='ICE candidate: '+rtcError(e)}}}
 function handlePaddle(m){
  if(!Number.isFinite(m.x))return;
  if(Number.isFinite(m.seq)&&m.seq<=lastSeq)return;
@@ -83,9 +87,9 @@ ctx.fillStyle='#51d7ae';ctx.fillRect(p.x-p.w/2,p.y,p.w,p.h);
 ctx.fillStyle='#ffd16b';ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,Math.PI*2);ctx.fill();
 if(over){ctx.fillStyle='rgba(4,10,20,.74)';ctx.fillRect(0,0,W,H);ctx.fillStyle='white';ctx.font='bold 30px system-ui';ctx.fillText('Game over',W/2,240);ctx.font='16px system-ui';ctx.fillText('Restart on phone',W/2,275)}
 ctx.fillStyle='#a8bdd3';ctx.font='12px system-ui';ctx.fillText(!lastControl?'Waiting for phone controller…':(Date.now()-lastControl<2500?'Phone controls received':'Phone disconnected / updates paused'),W/2,65);
-ctx.font='11px system-ui';ctx.fillStyle='#8da5ba';ctx.fillText((rtcOpen()?'WebRTC':'Cast')+' · gap avg '+Math.round(avgGap)+'ms · max '+Math.round(maxGap)+'ms · packets '+packetCount,W/2,475);ctx.fillText(rtcState+' · ICE '+rtcIce+' · peer '+rtcConn+' · data '+rtcData,W/2,489);ctx.font='10px system-ui';ctx.fillText(rtcDiag.slice(0,85),W/2,499);
+ctx.font='11px system-ui';ctx.fillStyle='#8da5ba';ctx.fillText((rtcOpen()?'WebRTC':'Cast')+' · gap avg '+Math.round(avgGap)+'ms · max '+Math.round(maxGap)+'ms · packets '+packetCount,W/2,475);ctx.fillText(rtcState+' · ICE '+rtcIce+' · peer '+rtcConn+' · data '+rtcData,W/2,489);ctx.font='9px system-ui';ctx.fillText('ICE '+rtcGather+' | TV '+rtcLocalTypes+' | phone '+rtcRemoteTypes,W/2,459);ctx.fillText('Pair '+rtcPair.slice(0,62),W/2,468);ctx.fillText(rtcDiag.slice(0,85),W/2,499);
 }
-function frame(t){const dt=last?Math.min(.032,(t-last)/1000):0;last=t;update(dt);if(t-lastState>1000){lastState=t;sendState()}draw();requestAnimationFrame(frame)}requestAnimationFrame(frame);
+function frame(t){if(t-rtcStatsAt>1500){rtcStatsAt=t;rtcCheckPair()}const dt=last?Math.min(.032,(t-last)/1000):0;last=t;update(dt);if(t-lastState>1000){lastState=t;sendState()}draw();requestAnimationFrame(frame)}requestAnimationFrame(frame);
 try{if(window.cast&&cast.framework){receiver=cast.framework.CastReceiverContext.getInstance();receiver.addCustomMessageListener(NS,event=>{let m=event.data;if(typeof m==='string'){try{m=JSON.parse(m)}catch(e){return}}if(!m||typeof m!=='object')return;senderId=event.senderId||senderId;if(m.type==='hello'){lastSeq=-1;lastControl=Date.now();sendState();startRtc()}
 if(m.type==='rtc-answer'||m.type==='rtc-ice'){handleSignal(m);return}
 if(m.type==='paddle'&&!rtcOpen())handlePaddle(m);

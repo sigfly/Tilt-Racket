@@ -6,7 +6,7 @@
 <style>
 :root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif}*{box-sizing:border-box}body{margin:0;background:#0b1220;color:#f3f6fc}main{max-width:680px;margin:auto;padding:16px}h1{font-size:1.35rem;margin:0 0 4px}.sub{color:#a7b6cd;font-size:.9rem;margin:0 0 14px}.stage{width:100%;aspect-ratio:4/5;max-height:62vh;background:#101e33;border:1px solid #33445c;border-radius:16px;display:block;touch-action:none}.controls{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}button{background:#263951;color:#fff;border:1px solid #48617d;border-radius:12px;padding:12px 14px;font-weight:650;font-size:14px;min-height:46px}button.primary{background:#0f846a;border-color:#23ac8b}button:disabled{opacity:.45}.info{background:#17253a;border-radius:12px;padding:12px;font-size:.85rem;color:#c8d4e4;line-height:1.55}.info strong{color:white}.setting{display:flex;align-items:center;gap:12px;margin:12px 0;font-size:.9rem}.setting input{flex:1;min-width:80px}#status{color:#ffcf78}.foot{font-size:.78rem;color:#91a3bc;line-height:1.5;margin-top:10px}
 </style></head>
-<body><div style="position:fixed;top:6px;right:8px;z-index:99;color:#9fb0c8;background:#0b1220d9;border-radius:6px;padding:3px 6px;font:11px system-ui;pointer-events:none">v4.1</div><main><h1>🏓 Tilt Racket</h1><p class="sub">Phone controller · tilt left/right to keep the ball bouncing</p>
+<body><div style="position:fixed;top:6px;right:8px;z-index:99;color:#9fb0c8;background:#0b1220d9;border-radius:6px;padding:3px 6px;font:11px system-ui;pointer-events:none">v4.2</div><main><h1>🏓 Tilt Racket</h1><p class="sub">Phone controller · tilt left/right to keep the ball bouncing</p>
 <div id="tvMode" style="display:none;background:#17253a;border:1px solid #33445c;border-radius:16px;padding:30px 18px;text-align:center;margin:12px 0"><div style="font-size:38px">📺</div><h2>Playing on TV</h2><p>Move your phone to steer the racket. The TV runs the game.</p><p>TV hits: <strong id="tvHits">0</strong></p><p id="tvGameState">Waiting for TV state…</p></div><canvas class="stage" id="game" aria-label="Racket and bouncing ball game"></canvas>
 <div class="controls"><button id="castButton" disabled>Cast to TV</button><button class="primary" id="enable">Enable motion</button><button id="calibrate">Calibrate center</button><button id="restart">Restart game</button></div>
 <label class="setting">Tilt sensitivity <input id="sensitivity" type="range" min="1" max="10" step="1" value="5"><output id="sensValue">5</output></label>
@@ -17,25 +17,30 @@
 (()=>{'use strict';
 const CAST_APP_ID='AC0021CF';const CAST_NS='urn:x-cast:com.tiltracket.game';let castReady=false,castConnected=false,castSession=null,lastSent=0,attachedSession=null,sendBusy=false,lastTxX=null,lastTxTime=0;const castButton=document.getElementById('castButton'),castStatus=document.getElementById('castStatus');
 let rtcPeer=null,rtcChannel=null,rtcEpoch=0,rtcState='Cast fallback',rtcIceQueue=[];
+const RTC_CONFIG={iceServers:[{urls:["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]}]};
+let rtcLocalTypes="none",rtcRemoteTypes="none",rtcPair="none",rtcGather="new",rtcStatsAt=0;
 let rtcDiag='API '+(typeof RTCPeerConnection==='function'?'available':'unavailable'),rtcIce='new',rtcConn='new',rtcData='closed',rtcCandidates=0,rtcRemoteCandidates=0;
 
+function candidateTypes(sdp){const counts={};for(const line of (sdp||'').split(/\r?\n/)){if(!line.startsWith('a=candidate:'))continue;const m=/\btyp\s+(host|srflx|prflx|relay)\b/.exec(line);if(m)counts[m[1]]=(counts[m[1]]||0)+1}return Object.keys(counts).length?Object.keys(counts).map(k=>k+':'+counts[k]).join(' '):'none'}
+async function rtcCheckPair(){const pc=rtcPeer;if(!pc||pc.connectionState==='closed')return;try{const stats=await pc.getStats();let selected=null,local=null,remote=null;stats.forEach(r=>{if(r.type==='transport'&&r.selectedCandidatePairId)selected=stats.get(r.selectedCandidatePairId)});if(!selected)stats.forEach(r=>{if(r.type==='candidate-pair'&&(r.selected||r.nominated)&&r.state==='succeeded')selected=r});if(selected){local=stats.get(selected.localCandidateId);remote=stats.get(selected.remoteCandidateId);rtcPair=(local?.candidateType||'?')+' → '+(remote?.candidateType||'?')+(Number.isFinite(selected.currentRoundTripTime)?' RTT '+Math.round(selected.currentRoundTripTime*1000)+'ms':'')}else rtcPair='no selected pair';}catch(e){rtcPair='stats unavailable: '+rtcError(e).slice(0,30)}}
 function rtcError(e){return (e&&e.name?e.name+': ':'')+(e&&e.message?e.message:String(e))}
 function iceWait(pc,limit=6500){return new Promise(resolve=>{if(pc.iceGatheringState==='complete')return resolve('complete');let done=false;const finish=s=>{if(done)return;done=true;clearTimeout(timer);pc.removeEventListener('icegatheringstatechange',check);resolve(s)};const check=()=>{if(pc.iceGatheringState==='complete')finish('complete')};const timer=setTimeout(()=>finish('timeout'),limit);pc.addEventListener('icegatheringstatechange',check)})}
 function rtcOpen(){return rtcChannel&&rtcChannel.readyState==='open'}
-function rtcCleanup(){rtcEpoch++;if(rtcChannel)try{rtcChannel.close()}catch(e){};if(rtcPeer)try{rtcPeer.close()}catch(e){};rtcChannel=null;rtcPeer=null;rtcIceQueue=[];rtcState='Cast fallback';rtcIce='new';rtcConn='new';rtcData='closed';rtcCandidates=0;rtcRemoteCandidates=0}
-function rtcDisplay(){const el=document.getElementById('transport');if(el)el.textContent=(rtcOpen()?'WebRTC direct':rtcState)+' | ICE '+rtcIce+' | peer '+rtcConn+' | data '+rtcData+' | '+rtcDiag}
+function rtcCleanup(){rtcEpoch++;if(rtcChannel)try{rtcChannel.close()}catch(e){};if(rtcPeer)try{rtcPeer.close()}catch(e){};rtcChannel=null;rtcPeer=null;rtcIceQueue=[];rtcState='Cast fallback';rtcIce='new';rtcConn='new';rtcData='closed';rtcCandidates=0;rtcRemoteCandidates=0;rtcLocalTypes='none';rtcRemoteTypes='none';rtcPair='none';rtcGather='new'}
+setInterval(()=>{if(rtcPeer){rtcCheckPair().then(rtcDisplay)}},1500);
+function rtcDisplay(){const el=document.getElementById('transport');if(el)el.textContent=(rtcOpen()?'WebRTC direct':rtcState)+' | ICE '+rtcIce+' | peer '+rtcConn+' | data '+rtcData+' | local '+rtcLocalTypes+' / TV '+rtcRemoteTypes+' | pair '+rtcPair+' | '+rtcDiag}
 async function rtcSignal(m){
  if(!window.RTCPeerConnection){rtcState='WebRTC unsupported — Cast fallback';rtcDisplay();return}
  if(m.type==='rtc-offer'){
- rtcCleanup();const epoch=rtcEpoch;rtcState='Negotiating WebRTC';rtcDiag='Offer received';rtcRemoteCandidates=(m.sdp.match(/a=candidate:/g)||[]).length;rtcDisplay();
- try{const pc=new RTCPeerConnection({iceServers:[]});rtcPeer=pc;
+ rtcCleanup();const epoch=rtcEpoch;rtcState='Negotiating WebRTC';rtcDiag='Offer received';rtcRemoteCandidates=(m.sdp.match(/a=candidate:/g)||[]).length;rtcRemoteTypes=candidateTypes(m.sdp);rtcDisplay();
+ try{const pc=new RTCPeerConnection(RTC_CONFIG);rtcPeer=pc;
  pc.ondatachannel=e=>{if(epoch!==rtcEpoch)return;rtcChannel=e.channel;rtcChannel.onopen=()=>{rtcState='WebRTC direct';rtcData='open';rtcDisplay()};rtcChannel.onclose=()=>{rtcState='Cast fallback';rtcData='closed';rtcDisplay()};rtcChannel.onerror=()=>{rtcData='error';rtcDiag='Data channel error';rtcDisplay()}};
  pc.onicecandidate=e=>{if(epoch!==rtcEpoch)return;if(e.candidate)rtcCandidates++};
  pc.oniceconnectionstatechange=()=>{if(epoch===rtcEpoch){rtcIce=pc.iceConnectionState;rtcDisplay()}};
  pc.onconnectionstatechange=()=>{if(epoch!==rtcEpoch)return;rtcConn=pc.connectionState;if(['failed','closed','disconnected'].includes(pc.connectionState))rtcState='Cast fallback';rtcDisplay()};
  await pc.setRemoteDescription({type:'offer',sdp:m.sdp});rtcDiag='TV candidates '+rtcRemoteCandidates+'; gathering phone ICE';rtcDisplay();
  const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
- const result=await iceWait(pc);if(epoch!==rtcEpoch)return;
+ const result=await iceWait(pc,10000);if(epoch!==rtcEpoch)return;rtcGather=result;rtcLocalTypes=candidateTypes(pc.localDescription?.sdp);
  rtcDiag='Answer sent ('+result+', '+rtcCandidates+' local candidates)';
  castMessage({type:'rtc-answer',sdp:pc.localDescription.sdp});rtcDisplay();
  }catch(e){rtcState='WebRTC failed — Cast fallback';rtcDiag=rtcError(e);rtcDisplay()}
