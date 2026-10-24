@@ -6,11 +6,18 @@
 const c=document.getElementById('screen'),ctx=c.getContext('2d');
 const W=400,H=500,NS='urn:x-cast:com.tiltracket.game';
 const p={x:200,y:451,w:96,h:13},b={x:200,y:90,vx:65,vy:20,r:9};
-let target=200,hits=0,over=false,last=0,lastControl=0,receiverStatus='Starting receiver…',senderId=null,receiver=null,lastState=0;function sendState(){if(receiver&&senderId){try{receiver.sendCustomMessage(NS,senderId,{type:'state',hits,over})}catch(e){receiverStatus='State send error: '+e.message}}}
+let target=200,previousTarget=200,previousPacketAt=0,packetAt=0,velocity=0,hits=0,over=false,last=0,lastControl=0,receiverStatus='Starting receiver…',senderId=null,receiver=null,lastState=0;function sendState(){if(receiver&&senderId){try{receiver.sendCustomMessage(NS,senderId,{type:'state',hits,over})}catch(e){receiverStatus='State send error: '+e.message}}}
 function reset(){hits=0;over=false;b.x=200;b.y=90;b.vx=65;b.vy=20;sendState();}
 function resize(){const d=Math.min(devicePixelRatio||1,2);c.width=Math.round(innerWidth*d);c.height=Math.round(innerHeight*d)}
 addEventListener('resize',resize);resize();
-function update(dt){p.x=target;if(over)return;
+function update(dt){
+// Follow latest target smoothly without introducing a long interpolation buffer.
+// Predict only a small amount, and cap extrapolation to avoid wild jumps.
+const age=packetAt?Math.min(0.045,(performance.now()-packetAt)/1000):0;
+const desired=Math.max(p.w/2,Math.min(W-p.w/2,target+velocity*age*0.35));
+const follow=1-Math.exp(-dt*32);
+p.x+=(desired-p.x)*follow;
+if(over)return;
 const old=b.y;b.vy+=420*dt;b.x+=b.vx*dt;b.y+=b.vy*dt;
 if(b.x-b.r<0){b.x=b.r;b.vx=Math.abs(b.vx)}if(b.x+b.r>W){b.x=W-b.r;b.vx=-Math.abs(b.vx)}
 if(b.y-b.r<0){b.y=b.r;b.vy=Math.abs(b.vy)}
@@ -33,7 +40,13 @@ ctx.fillText(receiverStatus,W/2,485);
 }
 function frame(t){const dt=last?Math.min(.032,(t-last)/1000):0;last=t;update(dt);if(t-lastState>1000){lastState=t;sendState()}draw();requestAnimationFrame(frame)}requestAnimationFrame(frame);
 try{if(window.cast&&cast.framework){receiver=cast.framework.CastReceiverContext.getInstance();receiver.addCustomMessageListener(NS,event=>{let m=event.data;if(typeof m==='string'){try{m=JSON.parse(m)}catch(e){return}}if(!m||typeof m!=='object')return;senderId=event.senderId||senderId;if(m.type==='hello'){lastControl=Date.now();sendState()}
-if(m.type==='paddle'&&Number.isFinite(m.x)){target=Math.max(p.w/2,Math.min(W-p.w/2,m.x*W));lastControl=Date.now()}
+if(m.type==='paddle'&&Number.isFinite(m.x)){const now=performance.now();
+const next=Math.max(p.w/2,Math.min(W-p.w/2,m.x*W));
+const elapsed=packetAt?Math.max(0.012,(now-packetAt)/1000):0;
+const measured=elapsed?Math.max(-900,Math.min(900,(next-target)/elapsed)):0;
+velocity=packetAt?velocity*0.65+measured*0.35:0;
+previousTarget=target;target=next;previousPacketAt=packetAt;packetAt=now;
+lastControl=Date.now()}
 if(m.type==='restart'){reset();lastControl=Date.now()}});
 receiver.start({disableIdleTimeout:true});receiverStatus='Cast receiver running';
 }else receiverStatus='Cast framework unavailable';}catch(e){receiverStatus='Receiver error: '+String(e.message||e)}
